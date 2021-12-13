@@ -1,0 +1,209 @@
+A ServiceAccount is used by containers running in a Pod, to communicate with the API server of the Kubernetes cluster. In this post we will see how this is done and the Kubernetes resources involved in the process.
+
+API Server — HTTP REST API
+If you work with a Kubernetes cluster, chances are that you use the kubectl binary, or the web interface, to call the API server. Under the hood, all the calls are made through the HTTP endpoints exposed by the API.
+This API is well documented; all the endpoints are described in the official documentation.
+A simple example: here is the list of Pods running in the default namespace. Of course the request needs to be authenticated and authorized to perform this action.
+
+Accessing the API Server From a Pod
+A lot of applications that run in the cluster (read: running in Pods), need to communicate with the API server. Among them are the processes running within the Control Plane (scheduler, controller manager, proxy, etc.), as well as all the applications that need to perform some form of administration for the cluster.
+For example, some applications might need to know:
+		The status of the cluster’s nodes.
+		The namespaces available.
+		The Pods running in the cluster, or in a specific namespace.
+		And other things like that.
+To communicate with the API server, a Pod uses a ServiceAccount containing an authentication token. Roles (e.g: the right to list all the Pods within a given namespace), or ClusterRole (eg: the right to read all the Secrets within the entire cluster), can then be bound to this ServiceAccount. Respectively with a RoleBinding or a ClusterRoleBinding, so the ServiceAccount is authorized to perform those actions.
+		From the outside of the cluster: the API server can be accessed using the end point specified in the kube config file ($HOME/.kube/config by default). As an example, if you use a DigitalOcean Managed Kubernetes, the end point is something like https://b703a4fd-0d56-4802-a354-ba2c2a767a77.k8s.ondigitalocean.com
+		From the inside of the cluster (read: from a Pod): the API server can be accessed using the dedicated service of type ClusterIP named kubernetes. This service is there by default and automatically recreated if it is deleted by error (it happens).
+$ kubectl get svc
+NAME       TYPE      CLUSTER-IP  EXTERNAL-IP PORT(S) AGE
+kubernetes ClusterIP 10.96.0.1   <none>      443/TCP 23h
+With the correct rights (more on that later), listing the Pods in the default namespace can be done from a Pod with this simple GET request.
+
+Using the Namespace Default ServiceAccount
+Each namespace has a default ServiceAccount, named default. We can verify this with the following command:
+$ kubectl get sa --all-namespaces | grep default
+default     default 1 6m19s
+kube-public default 1 6m19s
+kube-system default 1 6m19s
+Let’s inspect the ServiceAccount named default of the default namespace (this will be pretty much the same for the default ServiceAccount of another namespace).
+$ kubectl get sa default -o yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+ name: default
+ namespace: default
+ ...
+secrets:
+- name: default-token-dffkj
+We can see here that a Secret is provided to this ServiceAccount. Let’s have a closer look at this one:
+$ kubectl get secret default-token-dffkj -o yaml
+apiVersion: v1
+data:
+ ca.crt: LS0tLS1CRU...0tLS0tCg==
+ namespace: ZGVmYXVsdA==
+ token: ZXlKaGJHY2...RGMUlIX2c=
+kind: Secret
+metadata:
+ name: default-token-dffkj
+ namespace: default
+ ...
+type: kubernetes.io/service-account-token
+There are several key/value pairs under the data key of this Secret. For readability, I’ve shortened the value of the ca.crt and token values), basically:
+		ca.crt is the Base64 encoding of the cluster certificate.
+		namespace is the Base64 encoding of the current namespace (default).
+		token is the Base64 encoding of the JWT used to authenticate against the API server.
+Note: JSON Web Token (JWT) is an open standard (RFC 7519), that defines a compact and self-contained way for securely transmitting information between parties as a JSON object. This information can be verified and trusted because it is digitally signed.
+Let’s focus on the token. Once decoded (using base64 -d on Linux, or base64 -D on MacOS), we can easily get the payload of this JWT from the command line, or an online service like jwt.io.
+This payload has the following format:
+{
+ “iss”: “kubernetes/serviceaccount”,
+ “kubernetes.io/serviceaccount/namespace”: “default”,
+ “kubernetes.io/serviceaccount/secret.name”: “default-token-dffkj”,
+ “kubernetes.io/serviceaccount/service-account.name”: “default”,
+ “kubernetes.io/serviceaccount/service-account.uid”: “ac5aa972–80ae-11e9–854d-0800278b691f”,
+ “sub”: “system:serviceaccount:default:default”
+}
+We can see the ServiceAccount it is linked to, the namespace it exists in, and some other internal information.
+We will see below how to use this token from within a simple Pod, based on the following specification:
+
+Assuming this specification is in the pod-default.yaml file, you can create the Pod with the following (and standard) command:
+$ kubectl apply -f pod-default.yaml
+As no serviceAccountName key is specified, the default ServiceAccount of the Pod’s namespace is used. We can confirm this by checking the specification of this Pod once created (Kubernetes adds a lot of things for us during the creation process).
+
+Important things to note here:
+		The serviceAccountName key is set with the name of the default ServiceAccount.
+		The information of the ServiceAccount is mounted inside the container of the Pod, through the usage of volume, in /var/run/secrets/kubernetes.io/serviceaccount (more on that in a bit).
+Anonymous call of the API server
+Let’s run a shell within this container and install the curl utility:
+$ kubectl exec -ti pod-default -- sh
+/ # apk add --update curl
+From this shell, we can try to get information from the API server without authentication.
+/ # curl https://kubernetes/api/v1 --insecure
+Note: as said above, from a Pod running in the cluster, the API server can be reached using the Kubernetes ClusterIP service.
+We then get an error message, as an unauthenticated user is not allowed to perform this request.
+/ # curl https://kubernetes/api --insecure
+{
+ “kind”: “Status”,
+ “apiVersion”: “v1”,
+ “metadata”: {},
+ “status”: “Failure”,
+ “message”: “forbidden: User \”system:anonymous\” cannot get path \”/api\””,
+ “reason”: “Forbidden”,
+ “details”: {},
+ “code”: 403
+}
+Let’s go one step further and try to issue the same query using the token of the default ServiceAccount.
+Call using the ServiceAccount token
+From the alpine container, the token of the default ServiceAccount can be retrieved from /run/secrets/kubernetes.io/serviceaccount/token (remember the volume/volumeMounts instructions above). Using this token, we can use it as a Bearer token to authenticate against the API server:
+/ # TOKEN=$(cat /run/secrets/kubernetes.io/serviceaccount/token)
+/ # curl -H “Authorization: Bearer $TOKEN” https://kubernetes/api/v1/ --insecure
+This time the request goes fine — no more error querying this end point. The list of resources is returned.
+{
+  "kind": "APIResourceList",
+  "groupVersion": "v1",
+  "resources": [
+   {
+     "name": "bindings",
+     "singularName": "",
+     "namespaced": true,
+     "kind": "Binding",
+     "verbs": [
+       "create"
+     ]
+   },
+   ...
+  ]
+}
+Let’s now try something more ambitious, and use this token to list all the Pods within the default namespace:
+/ # curl -H “Authorization: Bearer $TOKEN” https://kubernetes/api/v1/namespaces/default/pods/ --insecure
+{
+ “kind”: “Status”,
+ “apiVersion”: “v1”,
+ “metadata”: {},
+ “status”: “Failure”,
+ “message”: “pods is forbidden: User \”system:serviceaccount:default:default\” cannot list resource \”pods\” in API group \”\” in the namespace \”default\””,
+ “reason”: “Forbidden”,
+ “details”: {
+   “kind”: “pods”
+ },
+ “code”: 403
+}
+The default ServiceAccount does not have enough rights to perform this query. In the following part, we will create our own ServiceAccount and provide it with the additional rights it needs for this action.
+
+Using a Custom ServiceAccount
+Creation of a ServiceAccount
+Let’s create a new ServiceAccount in the default namespace and call it demo-sa. This ServiceAccount is defined in the following specification and created with the standard kubectl apply -f command.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+ name: demo-sa
+Creation of a Role
+A ServiceAccount is not that useful unless certain rights are bound to it. Rights are known as Role or ClusterRole in Kubernetes. They are associated with a ServiceAccount, with RoleBinding and ClusterRoleBinding respectively.
+A Role (the same applies to a ClusterRole) contains a list of rules. Each rule defines some actions that can be performed (e.g: list, get, watch) against a list of resources (e.g: Pod, Service, Secret) within apiGroups (eg: core, apps/v1). While a Role defines rights for a specific namespace, the scope of a ClusterRole is the entire cluster.
+The following specification defines a Role allowing to list all the Pods in the default namespace.
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: Role
+metadata:
+ name: list-pods
+ namespace: default
+rules:
+ — apiGroups:
+   — ''
+ resources:
+   — pods
+ verbs:
+   — list
+Binding the Role with the ServiceAccount
+In the last step, we bind the Role and the ServiceAccount created above. In order to do so, we define a RoleBinding with the following specification:
+apiVersion: rbac.authorization.k8s.io/v1beta1
+kind: RoleBinding
+metadata:
+ name: list-pods_demo-sa
+ namespace: default
+roleRef:
+ kind: Role
+ name: list-pods
+ apiGroup: rbac.authorization.k8s.io
+subjects:
+ — kind: ServiceAccount
+   name: demo-sa
+   namespace: default
+Once the RoleBinding is created, the demo-sa ServiceAccount can list the Pods in the default namespace (this is the action defined under the rules key within the specification of the Role). Let’s check this.
+Using the ServiceAccount within a Pod
+We create a simple Pod from the following specification:
+apiVersion: v1
+kind: Pod
+metadata:
+ name: pod-demo-sa
+spec:
+ serviceAccountName: demo-sa
+ containers:
+ — name: alpine
+   image: alpine:3.9
+   command:
+   — "sleep"
+   — "10000"
+The serviceAccountName key is specified and contains the name of the ServiceAccount used by that Pod, demo-sa. As we saw above, if the serviceAccountName is not specified in the Pod specification, the default ServiceAccount of the namespace is used.
+As we did with the pod-default Pod, we now run a shell within the alpine container of the Pod pod-demo-sa, get the token belonging to the demo-sa ServiceAccount, and use it to query the list of Pods within the default namespace.
+# Get the ServiceAccount token from within the Pod's container
+/ # TOKEN=$(cat /run/secrets/kubernetes.io/serviceaccount/token)
+# Call an API Server's endpoint (using the ClusterIP kubernetes service) to get all the Pods running in the default namespace
+/ # curl -H “Authorization: Bearer $TOKEN” https://kubernetes/api/v1/namespaces/default/pods/ --insecure
+No more error this time, as the ServiceAccount has the rights to perform this action. We get a list of Pods running in the default namespace.
+{
+  "kind": "PodList",
+  "apiVersion": "v1",
+  "metadata": {
+    "selfLink": "/api/v1/namespaces/default/pods/",
+    "resourceVersion": "96296"
+  },
+  "items": [
+    ...
+  ]
+}
+
+Main Takeaways
+By default, each Pod can communicate with the API server of the cluster it is running on. If no ServiceAccount is specified, it uses the default ServiceAccount of its namespace. As the default ServiceAccounts only have limited rights, it is generally best practice to create a ServiceAccount for each application, giving it the rights it needs (and no more).
+To authenticate against the API server, a Pod uses the token of the attached ServiceAccount. This token is available in the filesystem of each container of the Pod.
+In this example we used curl to query the HTTP end points of the API server. Real applications would obviously use dedicated libraries — several of them are available in different languages.

@@ -1,0 +1,4 @@
+ppts/
+other/*.yaml
+*scenarios*
+.DS_Store

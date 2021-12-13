@@ -1,0 +1,21 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+   name: alpine 
+   labels:
+     app: test
+spec:
+  replicas: 2
+  selector:
+     matchLabels:
+        app: test
+  template:
+    metadata:
+       name: alpine-pod
+       labels: 
+         app: test
+    spec:
+      containers:
+       - name: cont1
+         image: lerndevops/alpine:latest
+         command: ['/bin/sh', '-c', 'sleep 3600']

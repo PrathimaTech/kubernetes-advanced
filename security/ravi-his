@@ -1,0 +1,58 @@
+12  mkdir -p /home/prod-user/certs
+   13  cd /home/prod-user/certs
+   14  openssl genrsa -out prod-user.key 2048
+ 
+   25  openssl req -new -key prod-user.key -out prod-user.csr -subj "/CN=prod-user/O=devops"
+   26  ls -l
+   27  cat prod-user.csr | base64 | tr -d '\n'
+
+
+   29  kubectl get csr
+   30  kubectl certificate approve prodcsr
+   
+  31  kubectl get csr prod-user -o jsonpath="{.status.certificate}" | base64 --decode > prod-user.crt      ## this generates a crt file
+ 
+   33  kubectl create role prodadmin --verb=get,list,watch,create --resource=pods,services --namespace default
+   34  kubectl get roles
+   35  kubectl describe role prodadmin
+   
+   37  kubectl create rolebinding prodadminbinding --user=prod-user --role=prodadmin --namespace default
+   38  kubectl get pods --as prod-user
+   39  kubectl get deploy  --as prod-user
+   40  kubectl -n kube-system get pods --as prod-user
+   41  kubectl delete role prodadmin
+   42  kubectl delete rolebinding prodadminbinding
+   43  kubectl get clusterroles
+   44  kubectl describe clusterrole admin
+   45  kubectl create clusterrolebinding abcd --user=prod-user --clusterrole view
+   46  kubectl get all --all-namespaces --as prod-user
+   47  kubectl run pod1 --image nginx -n kube-system --as prod-user
+   48  kubectl run pod1 --image nginx --as prod-user
+   49  
+   50  kubectl config get-contexts
+   51  cd
+   52  vi .kube/config
+==== create a dummy context=====
+   53  kubectl config get-contexts
+   54  
+   55*
+   56  vi .kube/config
+   57  kubectl config use-context testcluster
+   58  kubectl config get-contexts
+   59  kubectl get pods
+   60  kubectl config use-context kubernetes-admin@kubernetes
+  
+
+
+
+#### To SEE Users : kubectl config view -o jsonpath='{.users[].name}' ;echo ""
+
+
+
+
+
+
+
+
+
+
