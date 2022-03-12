@@ -4,13 +4,14 @@ metadata:
   name: hostpath-vol-pod1
 spec:
   containers:
-   - name: test-container
-     image: tomcat
-     volumeMounts:
-      - name: hostpath-volume
-        mountPath: /usr/local/tomcat/logs
+    - name: test-container
+      image: busybox  # busybox is a plain linux image and it is available for 1 hour.
+      command: ['sh', '-c', 'sleep 3600'] 
+      volumeMounts:  #Inside the container where we are saving the data is volume mount.
+        - name: hostpath-volume
+          mountPath: /test
   volumes:
-   - name: hostpath-volume
-     hostPath:
-       path: /tmp/logs     # directory location on host
-       type: Directory  # this field is optional
+    - name: hostpath-volume
+      hostPath:
+        path: /tmp/data  # directory location on host
+        type: Directory  # this field is optional
